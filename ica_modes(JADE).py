@@ -2,6 +2,7 @@ import os
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.decomposition import PCA
 
 # -------------------------------
@@ -129,14 +130,41 @@ ica_basis_in_pixel_space = pca.inverse_transform(W)  # n_components x pixels
 ica_basis_in_pixel_space += X_mean.ravel()  # add mean back per pixel
 
 # -------------------------------
-# Visualize first 5 ICA modes as images
+# Save all ICA modes as images
 # -------------------------------
-for i in range(min(5, ica_basis_in_pixel_space.shape[0])):
+out_folder = "JADE_modes"
+os.makedirs(out_folder, exist_ok=True)
+
+for i in range(ica_basis_in_pixel_space.shape[0]):
     if ica_basis_in_pixel_space.shape[1] != 4096:
-        print(f"BASIS {i+1} has wrong pixel count: {ica_basis_in_pixel_space.shape[1]}")
+        print(f"Mode {i+1} wrong pixel count: {ica_basis_in_pixel_space.shape[1]}")
         continue
     mode_img = ica_basis_in_pixel_space[i].reshape(64, 64)
-    plt.imshow(mode_img, cmap='gray')
-    plt.title(f'ICA Mode {i+1}')
-    plt.axis('off')
-    plt.show()
+    # Normalize to uint8 for saving
+    norm_img = (mode_img - np.min(mode_img)) / (np.ptp(mode_img) + 1e-7) * 255
+    img_uint8 = Image.fromarray(norm_img.astype(np.uint8))
+    img_uint8.save(os.path.join(out_folder, f"JADE_mode_{i+1:03d}.png"))
+
+print(f"All modes saved to folder: {out_folder}")
+
+# -------------------------------
+# HSIC heatmap for first 20 ICA modes (color only, no numbers)
+# -------------------------------
+num_plot = min(20, hsic_matrix.shape[0])
+hsic_20 = hsic_matrix[:num_plot, :num_plot]
+
+plt.figure(figsize=(8, 7))
+sns.heatmap(hsic_20, annot=False, cmap="viridis")
+plt.title("HSIC Heatmap (First 20 ICA modes)")
+plt.xlabel("Modes")
+plt.ylabel("Modes")
+plt.tight_layout()
+plt.show()
+
+print("""
+HSIC heatmap color interpretation:
+- **Dark purple/blue** (low values): Indicates **higher independence** between modes.
+- **Yellow/green/lighter colors** (high values): Indicates **stronger dependence** (less independence) between modes.
+
+Ideally, for independent components, most off-diagonal elements should show dark (low) colors.
+""")
