@@ -1,0 +1,178 @@
+import os
+import numpy as np
+from PIL import Image
+from sklearn.decomposition import FastICA
+import matplotlib.pyplot as plt
+from scipy.spatial.distance import pdist, squareform
+
+# ===============================
+# Step 1: Load grayscale images as dataset matrix
+# ===============================
+def load_grayscale_images(folder, target_size=(64, 64)):
+    image_vectors = []
+    valid_files = []
+
+    for filename in os.listdir(folder):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif')):
+            path = os.path.join(folder, filename)
+            try:
+                img = Image.open(path).convert('L')
+                img = img.resize(target_size, Image.Resampling.LANCZOS)
+                arr = np.asarray(img, dtype=np.float64).flatten()
+                image_vectors.append(arr)
+                valid_files.append(filename)
+            except Exception as e:
+                print(f"Skipping {filename}: {e}")
+
+    if not image_vectors:
+        raise RuntimeError("No valid images found in folder.")
+
+    X = np.column_stack(image_vectors)
+    print(f"✅ Loaded {len(valid_files)} grayscale images, dataset shape: {X.shape}")
+    return X, valid_files, target_size
+
+
+# ===============================
+# Step 2: Decenter dataset
+# ===============================
+def decenter(X):
+    mean_vec = np.mean(X, axis=1, keepdims=True)
+    X_centered = X - mean_vec
+    print("✅ Data decentered.")
+    return X_centered, mean_vec
+
+
+# ===============================
+# Step 3: Whitening
+# ===============================
+def whiten(X):
+    cov = np.cov(X)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    eigvals = np.maximum(eigvals, 1e-10)
+    D_inv_sqrt = np.diag(1.0 / np.sqrt(eigvals))
+    X_white = eigvecs @ D_inv_sqrt @ eigvecs.T @ X
+    print("✅ Whitening done.")
+    return X_white, eigvecs, D_inv_sqrt
+
+
+# ===============================
+# Step 4: FastICA
+# ===============================
+def apply_fastica(X_white, n_components=10):
+    print(f"🔹 Applying FastICA with {n_components} components...")
+    ica = FastICA(n_components=n_components, whiten='unit-variance', random_state=0, max_iter=2000)
+    S_ = ica.fit_transform(X_white.T)
+    W = ica.components_
+    print("✅ FastICA completed.")
+    return S_.T, W
+
+
+# ===============================
+# Step 5: Show and save modes in pixel space
+# ===============================
+def show_and_save_modes(W, target_size, out_folder="modes"):
+    os.makedirs(out_folder, exist_ok=True)
+    n_modes = W.shape[0]
+    modes_images = W.T
+
+    plt.figure(figsize=(20, 4))
+    for i in range(n_modes):
+        img = modes_images[:, i].reshape(target_size)
+        img_norm = (img - img.min()) / (img.max() - img.min() + 1e-10) * 255
+        img_norm = img_norm.astype(np.uint8)
+
+        Image.fromarray(img_norm).save(os.path.join(out_folder, f"mode_{i+1}.png"))
+        plt.subplot(2, n_modes//2, i + 1)
+        plt.imshow(img_norm, cmap='gray')
+        plt.title(f"Mode {i+1}")
+        plt.axis('off')
+
+    plt.tight_layout()
+    plt.show()
+    print(f"✅ Saved {n_modes} modes in '{out_folder}' folder.")
+
+
+# ===============================
+# Step 6: HSIC independence
+# ===============================
+def hsic(X, Y, sigma=1.0):
+    X = X.reshape(-1, 1)
+    Y = Y.reshape(-1, 1)
+    def rbf_kernel(A, sigma):
+        dists = squareform(pdist(A, 'sqeuclidean'))
+        return np.exp(-dists / (2 * sigma ** 2))
+    Kx = rbf_kernel(X, sigma)
+    Ky = rbf_kernel(Y, sigma)
+    n = X.shape[0]
+    H = np.eye(n) - np.ones((n, n)) / n
+    return np.trace(Kx @ H @ Ky @ H) / (n - 1) ** 2
+
+
+def hsic_matrix(S):
+    n_modes = S.shape[0]
+    mat = np.zeros((n_modes, n_modes))
+    for i in range(n_modes):
+        for j in range(n_modes):
+            mat[i, j] = hsic(S[i], S[j])
+    return mat
+
+
+# ===============================
+# Step 7: Plot HSIC matrix
+# ===============================
+def plot_hsic_heatmap(hsic_mat):
+    plt.figure(figsize=(6, 5))
+    plt.imshow(hsic_mat, cmap='viridis', interpolation='nearest')
+    plt.colorbar(label='HSIC Value')
+    plt.title('HSIC Independence Matrix')
+    plt.xlabel('Mode Index')
+    plt.ylabel('Mode Index')
+    plt.xticks(range(hsic_mat.shape[0]), range(1, hsic_mat.shape[0] + 1))
+    plt.yticks(range(hsic_mat.shape[0]), range(1, hsic_mat.shape[0] + 1))
+    plt.tight_layout()
+    plt.show()
+
+
+# ===============================
+# MAIN
+# ===============================
+if __name__ == "__main__":
+    DATA_FOLDER = r"rescaled_images"   # change this to your folder path
+    TARGET_SIZE = (64, 64)
+    N_COMPONENTS = 10   # ✅ Extract 10 ICA modes
+
+    # Load grayscale images
+    X, files, size = load_grayscale_images(DATA_FOLDER, TARGET_SIZE)
+
+    # Center and whiten
+    X_centered, _ = decenter(X)
+    X_white, E, D_inv_sqrt = whiten(X_centered)
+
+    # FastICA
+    S, W = apply_fastica(X_white, n_components=N_COMPONENTS)
+
+    print("\n================ UNMIXING MATRIX (W) ================")
+    print(np.round(W, 5))
+    print("W shape:", W.shape)
+
+    # Compute full unmixing transformation (including whitening)
+    full_unmixing = W @ E @ D_inv_sqrt @ E.T
+    print("\n================ FULL UNMIXING MATRIX (W_total) ================")
+    print(np.round(full_unmixing, 5))
+    print("W_total shape:", full_unmixing.shape)
+
+    # Save unmixing matrices
+    np.savetxt("unmixing_matrix_W.csv", W, delimiter=",")
+    np.savetxt("full_unmixing_matrix.csv", full_unmixing, delimiter=",")
+    print("✅ Saved W and full W_total to CSV files.")
+
+    # Show & save modes
+    show_and_save_modes(W, TARGET_SIZE)
+
+    # HSIC independence
+    hsic_mat = hsic_matrix(S)
+    print("\n🔹 HSIC Independence Matrix (lower = more independent):")
+    print(np.round(hsic_mat, 5))
+
+    # Plot heatmap
+    plot_hsic_heatmap(hsic_mat)
